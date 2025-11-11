@@ -1,0 +1,257 @@
+<!doctype html>
+
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>Filtro — CANCELADO</title>
+  <style>
+    :root{--bg-black:#0b0b0b;--red:#c81b1b;--white:#ffffff}
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,var(--bg-black),#2b0000);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial}
+    .app{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:12px;box-sizing:border-box}
+    .stage{position:relative;width:clamp(280px,86vw,720px);aspect-ratio:3/4;border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,0.6);background:radial-gradient(ellipse at center, rgba(255,255,255,0.02), transparent 35%)}
+    video, canvas{width:100%;height:100%;object-fit:cover;display:block}/* overlay visual: flames at borders simulated with gradients and SVG-like shapes */
+.overlay{
+  pointer-events:none;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;mix-blend-mode:normal
+}
+
+.flame-top,.flame-bottom{position:absolute;left:0;right:0;height:20%;background:linear-gradient(180deg, rgba(200,27,27,0.95), rgba(255,120,40,0.15));filter:blur(18px);opacity:0.95}
+.flame-top{top:0;transform-origin:top}
+.flame-bottom{bottom:0;transform:rotate(180deg)}
+
+/* white highlights */
+.highlights{position:absolute;inset:0;pointer-events:none}
+.highlight-top-left{position:absolute;left:6%;top:6%;width:30%;height:12%;background:linear-gradient(90deg, rgba(255,255,255,0.8), rgba(255,255,255,0));border-radius:40px;filter:blur(6px);opacity:0.6}
+.highlight-right{position:absolute;right:6%;top:25%;width:18%;height:10%;background:linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0));border-radius:30px;filter:blur(6px);opacity:0.5}
+
+/* big CANCELADO text */
+.stamp{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-weight:900;letter-spacing:6px;font-size:clamp(48px,12vw,140px);text-transform:uppercase;color:var(--red);text-align:center;pointer-events:none;mix-blend-mode:normal;filter:drop-shadow(0 6px 14px rgba(0,0,0,0.7));opacity:0.95
+}
+
+/* stamp effect: white border highlight behind text */
+.stamp::before{content:"CANCELADO";position:absolute;inset:0;color:var(--white);transform:translate(6px,6px);z-index:-1;opacity:0.12;font-weight:900}
+
+.controls{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);color:var(--white);padding:8px 12px;border-radius:10px;font-size:15px;backdrop-filter: blur(6px)}
+.primary{background:var(--red);border-color:rgba(0,0,0,0.2);color:var(--white)}
+.small{padding:6px 8px;font-size:13px}
+
+.topbar{width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.title{color:var(--white);font-weight:700}
+.hint{color:rgba(255,255,255,0.7);font-size:13px}
+
+footer{margin-top:10px;color:rgba(255,255,255,0.7);font-size:13px}
+
+@media (max-width:420px){.stamp{letter-spacing:3px}}
+
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div class="title">Filtro — CANCELADO</div>
+      <div class="hint">Use frente / trás • Baixe a foto</div>
+    </div><div class="stage" id="stage">
+  <video id="video" playsinline autoplay muted></video>
+  <canvas id="captureCanvas" style="display:none"></canvas>
+
+  <div class="overlay" aria-hidden="true">
+    <div class="flame-top"></div>
+    <div class="flame-bottom"></div>
+    <div class="highlights">
+      <div class="highlight-top-left"></div>
+      <div class="highlight-right"></div>
+    </div>
+    <div class="stamp">CANCELADO</div>
+  </div>
+</div>
+
+<div class="controls">
+  <select id="cameraSelect" class="small"></select>
+  <button id="flipBtn" class="small">Trocar câmera</button>
+  <button id="captureBtn" class="primary">Tirar foto</button>
+  <button id="downloadBtn" style="display:none">Baixar imagem</button>
+  <button id="resetBtn" style="display:none">Tirar outra</button>
+</div>
+
+<footer>Ao abrir, permita o acesso à câmera. Arquivo funciona offline se salvo como HTML.</footer>
+
+  </div>  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('captureCanvas');
+    const cameraSelect = document.getElementById('cameraSelect');
+    const flipBtn = document.getElementById('flipBtn');
+    const captureBtn = document.getElementById('captureBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const stage = document.getElementById('stage');
+
+    let currentStream = null;
+    let currentDeviceId = null;
+    let devices = [];
+
+    async function listCameras(){
+      try{
+        const all = await navigator.mediaDevices.enumerateDevices();
+        devices = all.filter(d => d.kind === 'videoinput');
+        cameraSelect.innerHTML = '';
+        devices.forEach((d,i)=>{
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.text = d.label || Câmera ${i+1};
+          cameraSelect.appendChild(opt);
+        });
+      }catch(e){
+        console.warn('Erro ao listar câmeras', e);
+      }
+    }
+
+    async function startCamera(deviceId){
+      if(currentStream){
+        currentStream.getTracks().forEach(t=>t.stop());
+        currentStream = null;
+      }
+      const constraints = {
+        audio: false,
+        video: deviceId ? {deviceId:{exact:deviceId}} : {facingMode: 'user'}
+      };
+      try{
+        currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = currentStream;
+        await video.play();
+        // try to select matching device in select
+        if(deviceId) cameraSelect.value = deviceId;
+      }catch(err){
+        alert('Não foi possível acessar a câmera. Verifique permissões.\n' + err.message);
+      }
+    }
+
+    cameraSelect.addEventListener('change', (e)=>{
+      startCamera(e.target.value);
+    });
+
+    flipBtn.addEventListener('click', async ()=>{
+      // simple flip: find alternate device
+      if(devices.length < 2) return;
+      const idx = devices.findIndex(d => d.deviceId === cameraSelect.value);
+      const next = devices[(idx + 1) % devices.length];
+      startCamera(next.deviceId);
+    });
+
+    captureBtn.addEventListener('click', ()=>captureImage(false));
+    downloadBtn.addEventListener('click', ()=>captureImage(true));
+    resetBtn.addEventListener('click', ()=>{
+      downloadBtn.style.display = 'none';
+      resetBtn.style.display = 'none';
+      captureBtn.style.display = 'inline-block';
+      if(video.srcObject){
+        video.style.display = 'block';
+      }
+    });
+
+    async function captureImage(andDownload){
+      // draw current video frame and overlay (stamp + highlights) into canvas
+      const rect = stage.getBoundingClientRect();
+      canvas.width = rect.width * devicePixelRatio;
+      canvas.height = rect.height * devicePixelRatio;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(devicePixelRatio, devicePixelRatio);
+      // draw video
+      // compute video draw to cover the stage (object-fit:cover)
+      const vw = video.videoWidth, vh = video.videoHeight;
+      const sw = rect.width, sh = rect.height;
+      if(vw && vh){
+        const videoRatio = vw / vh;
+        const stageRatio = sw / sh;
+        let dw, dh, dx, dy;
+        if(videoRatio > stageRatio){
+          // video is wider, fit height
+          dh = sh; dw = dh * videoRatio; dx = (sw - dw)/2; dy = 0;
+        }else{
+          dw = sw; dh = dw / videoRatio; dx = 0; dy = (sh - dh)/2;
+        }
+        ctx.drawImage(video, dx, dy, dw, dh);
+      }else{
+        // fallback: fill black
+        ctx.fillStyle = '#000'; ctx.fillRect(0,0,sw,sh);
+      }
+
+      // draw overlay visuals (simple approximations)
+      // red dark vignette / flames
+      const g = ctx.createLinearGradient(0,0,0,rect.height);
+      g.addColorStop(0,'rgba(200,27,27,0.65)');
+      g.addColorStop(0.15,'rgba(0,0,0,0)');
+      g.addColorStop(0.85,'rgba(0,0,0,0)');
+      g.addColorStop(1,'rgba(200,27,27,0.65)');
+      ctx.fillStyle = g; ctx.fillRect(0,0,rect.width,rect.height);
+
+      // white highlights
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.beginPath(); ctx.ellipse(rect.width*0.18, rect.height*0.08, rect.width*0.22, rect.height*0.08, 0,0,2*Math.PI); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(rect.width*0.82, rect.height*0.28, rect.width*0.12, rect.height*0.06, 0,0,2*Math.PI); ctx.fill();
+
+      // big CANCELADO text
+      const fontSize = Math.min(rect.width * 0.18, 120);
+      ctx.font = 900 ${fontSize}px sans-serif;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      // shadow/offset white behind
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillText('CANCELADO', rect.width/2 + fontSize*0.05, rect.height/2 + fontSize*0.05);
+      // main red
+      ctx.fillStyle = 'rgba(200,27,27,0.98)';
+      ctx.fillText('CANCELADO', rect.width/2, rect.height/2);
+
+      // done: show canvas to user as image (replace video)
+      const dataURL = canvas.toDataURL('image/png');
+      // show options
+      downloadBtn.style.display = 'inline-block';
+      resetBtn.style.display = 'inline-block';
+      captureBtn.style.display = 'none';
+      // hide video and place the captured image as a background
+      video.style.display = 'none';
+
+      // create a temporary image to display inside stage
+      let img = document.getElementById('capturedImage');
+      if(!img){
+        img = document.createElement('img'); img.id = 'capturedImage'; img.style.width='100%'; img.style.height='100%'; img.style.objectFit='cover'; img.style.display='block';
+        stage.appendChild(img);
+      }
+      img.src = dataURL;
+
+      if(andDownload){
+        const a = document.createElement('a');
+        a.href = dataURL;
+        a.download = 'cancelado.png';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } else {
+        // set download link target for later
+        downloadBtn.onclick = ()=>{
+          const a = document.createElement('a');
+          a.href = dataURL; a.download = 'cancelado.png'; document.body.appendChild(a); a.click(); a.remove();
+        };
+      }
+    }
+
+    // init
+    (async ()=>{
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+        alert('Navegador não suporta câmera (getUserMedia). Use Chrome/Edge/Safari moderno.');
+        return;
+      }
+      try{
+        // request permission once to get labels
+        await navigator.mediaDevices.getUserMedia({video:true});
+      }catch(e){/* ignore — user may block later, we'll show message on start */}
+      await listCameras();
+      // try to pick front camera by default
+      const front = devices.find(d=>/front|face|selfie/i.test(d.label)) || devices[0];
+      if(front) startCamera(front.deviceId);
+
+      // refresh device list if changes
+      navigator.mediaDevices.addEventListener('devicechange', async ()=>{ await listCameras(); });
+    })();
+  </script></body>
+</html>
